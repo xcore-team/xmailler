@@ -1,0 +1,2 @@
+aiosmtplib>=3.0.0
+xcore @ git+https://github.com/traoreera/xcore.git

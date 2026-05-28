@@ -1,0 +1,10 @@
+version: "1"
+project: xmailler
+description: Extension XCore d'envoi d'email asynchrone via SMTP
+
+maintainers:
+  - name: traoreera
+    github: traoreera
+    role: Lead Maintainer
+
+contributors: []

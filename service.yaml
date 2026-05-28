@@ -1,6 +1,6 @@
 name: xmailler
 version: "1.0.0"
-entry_class: extensions.xmailler.main:EmailService
+entry_class: main:EmailService
 description: >
   Extension XCore d'envoi d'email asynchrone via SMTP.
   Supporte l'envoi direct, les templates HTML intégrés, l'envoi en masse
