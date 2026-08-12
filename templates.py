@@ -87,7 +87,8 @@ def render(name: str, context: dict[str, Any]) -> str:
     """Rendu d'un template par substitution de {clé}."""
     tpl = TEMPLATES.get(name)
     if not tpl:
-        raise KeyError(f"Template email inconnu : '{name}'. Disponibles : {list(TEMPLATES.keys())}")
+        raise KeyError(
+            f"Template email inconnu : '{name}'. Disponibles : {list(TEMPLATES.keys())}")
     try:
         return tpl.format(**context)
     except KeyError as e:
