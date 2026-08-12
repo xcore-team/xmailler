@@ -33,9 +33,9 @@ from typing import Any
 
 from xcore.services.base import BaseService, ServiceStatus
 
+from . import smtp as _smtp
 from .config import EmailConfig, EmailMessage
 from .templates import TEMPLATES, render
-from . import smtp as _smtp
 
 logger = logging.getLogger("xcore.services.email")
 
@@ -83,10 +83,12 @@ class EmailService(BaseService):
             import aiosmtplib  # noqa: F401
             self._smtp_available = True
         except ImportError:
-            logger.warning("aiosmtplib non installé — envoi SMTP désactivé. pip install aiosmtplib")
+            logger.warning(
+                "aiosmtplib non installé — envoi SMTP désactivé. pip install aiosmtplib")
 
         self._queue = asyncio.Queue(maxsize=self._cfg.queue_size)
-        self._worker = asyncio.create_task(self._queue_worker(), name="email_queue_worker")
+        self._worker = asyncio.create_task(
+            self._queue_worker(), name="email_queue_worker")
         self._worker.add_done_callback(_swallow_task_exception)
 
         if self._smtp_available:
@@ -98,7 +100,8 @@ class EmailService(BaseService):
                 )
                 self._status = ServiceStatus.READY
             except Exception as e:
-                logger.warning(f"EmailService : connexion SMTP échouée ({e}) → mode dégradé")
+                logger.warning(
+                    f"EmailService : connexion SMTP échouée ({e}) → mode dégradé")
                 self._status = ServiceStatus.DEGRADED
         else:
             self._status = ServiceStatus.DEGRADED
@@ -112,7 +115,8 @@ class EmailService(BaseService):
                 pass
         self._worker = None
         self._status = ServiceStatus.STOPPED
-        logger.info(f"EmailService arrêté — {self._sent_count} email(s) envoyé(s)")
+        logger.info(
+            f"EmailService arrêté — {self._sent_count} email(s) envoyé(s)")
 
     async def health_check(self) -> tuple[bool, str]:
         if not self._smtp_available:
@@ -168,7 +172,8 @@ class EmailService(BaseService):
     ) -> bool:
         context.setdefault("app_name", self._cfg.from_name)
         html_body = render(template, context)
-        email_subject = subject or context.get("subject", f"[{self._cfg.from_name}] Notification")
+        email_subject = subject or context.get(
+            "subject", f"[{self._cfg.from_name}] Notification")
         return await self.send(to=to, subject=email_subject, body=html_body, is_html=True, cc=cc)
 
     async def send_bulk(
@@ -201,7 +206,8 @@ class EmailService(BaseService):
             self._queued_count += 1
             return True
         except asyncio.QueueFull:
-            logger.warning(f"File email pleine ({self._cfg.queue_size} messages)")
+            logger.warning(
+                f"File email pleine ({self._cfg.queue_size} messages)")
             return False
 
     def add_template(self, name: str, html_content: str) -> None:
@@ -224,15 +230,18 @@ class EmailService(BaseService):
                 await _smtp.send_message(self._cfg, msg)
                 self._sent_count += 1
                 self._last_sent_at = time.time()
-                logger.info(f"Email envoyé → {msg.to} | {msg.subject!r} (tentative {attempt})")
+                logger.info(
+                    f"Email envoyé → {msg.to} | {msg.subject!r} (tentative {attempt})")
                 return True
             except Exception as e:
-                logger.warning(f"Email échec (tentative {attempt}/{self._cfg.max_retries}) → {msg.to} : {e}")
+                logger.warning(
+                    f"Email échec (tentative {attempt}/{self._cfg.max_retries}) → {msg.to} : {e}")
                 if attempt < self._cfg.max_retries:
                     await asyncio.sleep(2 ** (attempt - 1))
 
         self._failed_count += 1
-        logger.error(f"Email définitivement échoué → {msg.to} | {msg.subject!r}")
+        logger.error(
+            f"Email définitivement échoué → {msg.to} | {msg.subject!r}")
         return False
 
     async def _queue_worker(self) -> None:
