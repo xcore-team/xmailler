@@ -1,0 +1,18 @@
+name: Publish to xcore marketplace
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify xservices
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          curl -sS -X POST \
+            -H "X-API-Key: ${{ secrets.XCORE_API_KEY }}" \
+            "${XCORE_MARKETPLACE_URL:-https://marketplace.xcorehub.dev}/app/xservices/github/repos/traoreera/xcore/tags/$TAG/recompute" \
+            --fail-with-body
