@@ -5,5 +5,5 @@ description: >
   Extension XCore d'envoi d'email asynchrone via SMTP.
   Supporte l'envoi direct, les templates HTML intégrés, l'envoi en masse
   et une file d'envoi fire-and-forget.
-homepage: https://github.com/traoreera/xcore
-repository: https://github.com/traoreera/xcore
+homepage: https://github.com/xcore-team/xmailler
+repository: https://github.com/xcore-team/xmailler
