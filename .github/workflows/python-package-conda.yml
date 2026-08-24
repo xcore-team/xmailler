@@ -14,5 +14,5 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           curl -sS -X POST \
             -H "X-API-Key: ${{ secrets.XCORE_API_KEY }}" \
-            "${XCORE_MARKETPLACE_URL:-https://marketplace.xcorehub.dev}/app/xservices/github/repos/traoreera/xcore/tags/$TAG/recompute" \
+            "${XCORE_MARKETPLACE_URL:-https://marketplace.xcorehub.dev}/app/xservices/github/repos/traoreera/xmailler/tags/$TAG/recompute" \
             --fail-with-body
