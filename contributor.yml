@@ -7,4 +7,24 @@ maintainers:
     github: traoreera
     role: Lead Maintainer
 
-contributors: []
+contributors:
+  - name: "Eliezer Traore"
+    role: "Mainteneur principal"
+    github: "traoreera"
+    email: "traoreera@gmail.com"
+    areas:
+      - license-management
+      - jwt-security
+      - state-machine
+      - middleware-protection
+      - sqlalchemy
+
+  - name: "Xcore"
+    role: "Organisation"
+    github: "xcore-team"
+    email: "xcore@xcorehub.dev"
+    areas:
+      - review
+      - merge
+      - architecture
+      - quality-assurance
