@@ -38,6 +38,7 @@ async def test_connection(cfg: "EmailConfig") -> None:
 
 async def send_message(cfg: "EmailConfig", msg: "EmailMessage") -> None:
     """Construit le MIME et envoie via SMTP."""
+    _validate_headers(msg)
     mime = MIMEMultipart("alternative")
     mime["From"] = f"{cfg.from_name} <{cfg.from_address}>"
     mime["To"] = ", ".join([msg.to] if isinstance(msg.to, str) else msg.to)
@@ -57,6 +58,24 @@ async def send_message(cfg: "EmailConfig", msg: "EmailMessage") -> None:
         await smtp.send_message(mime, recipients=msg.recipients)
     finally:
         await smtp.quit()
+
+
+_HEADER_VALUE_RE = re.compile(r"^[^\r\n]*$")
+
+
+def _validate_headers(msg: "EmailMessage") -> None:
+    """Défense en profondeur anti header-injection : To/Subject/Cc/Reply-To
+    finissent en en-têtes MIME bruts (politique compat32, sans validation
+    native) — un "\\nBcc: ..." y injecterait des en-têtes arbitraires.
+    Lève ValueError (attrapée par _send_with_retry côté service, et refusée
+    en amont par le plugin chat) plutôt que d'envoyer un message piégé."""
+    recipients = [msg.to] if isinstance(msg.to, str) else list(msg.to)
+    for addr in recipients + list(msg.cc or []) + list(msg.bcc or []):
+        if not isinstance(addr, str) or _HEADER_VALUE_RE.match(addr) is None or "@" not in addr:
+            raise ValueError(f"Adresse email invalide ou dangereuse : {addr!r}")
+    for label, value in (("Subject", msg.subject), ("Reply-To", msg.reply_to or "")):
+        if _HEADER_VALUE_RE.match(value) is None:
+            raise ValueError(f"En-tête {label} invalide (retour à la ligne interdit)")
 
 
 def html_to_text(html: str) -> str:

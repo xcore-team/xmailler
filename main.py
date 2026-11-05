@@ -16,6 +16,11 @@ Configuration dans int.yaml :
           timeout: 10
           max_retries: 3
           queue_size: 100
+          requeue_delay: 30   # secondes, doublé à chaque remise en file (plafond x16)
+          max_requeues: 6     # remises en file avant abandon journalisé
+
+Une panne SMTP n'empêche JAMAIS le démarrage : le service reste READY (donc enregistré), signale
+l'état dégradé dans /health et les journaux, et réessaie les envois en file.
 
 Accès depuis un plugin :
     email = self.get_service("ext.email")
@@ -38,6 +43,9 @@ from .config import EmailConfig, EmailMessage
 from .templates import TEMPLATES, render
 
 logger = logging.getLogger("xcore.services.email")
+
+# Délai minimal entre deux sondes SMTP (évite de solliciter le serveur à chaque /health).
+_PROBE_MIN_INTERVAL = 15.0
 
 
 def _swallow_task_exception(task: asyncio.Task) -> None:
@@ -69,6 +77,10 @@ class EmailService(BaseService):
         self._queue: asyncio.Queue[EmailMessage] | None = None
         self._worker: asyncio.Task | None = None
         self._smtp_available = False
+        self._smtp_ok = False
+        self._degraded_reason = ""
+        self._last_probe = 0.0
+        self._retry_tasks: set[asyncio.Task] = set()
         self._sent_count = 0
         self._failed_count = 0
         self._queued_count = 0
@@ -77,12 +89,20 @@ class EmailService(BaseService):
     # ── Cycle de vie ──────────────────────────────────────────────────────────
 
     async def init(self) -> None:
+        """Démarre TOUJOURS le service (READY), même si le SMTP est injoignable.
+
+        Le chargeur d'extensions n'enregistre que les services READY : un état DEGRADED rendrait
+        `ext.email` introuvable, donc `auth` et les plugins qui en dépendent ne démarreraient pas.
+        Une panne de courrier se voit dans /health (health_check) et les journaux, et les envois
+        sont mis en file puis réessayés (voir `_queue_worker`).
+        """
         self._status = ServiceStatus.INITIALIZING
 
         try:
             import aiosmtplib  # noqa: F401
             self._smtp_available = True
         except ImportError:
+            self._degraded_reason = "aiosmtplib non installé (pip install aiosmtplib)"
             logger.warning(
                 "aiosmtplib non installé — envoi SMTP désactivé. pip install aiosmtplib")
 
@@ -92,19 +112,51 @@ class EmailService(BaseService):
         self._worker.add_done_callback(_swallow_task_exception)
 
         if self._smtp_available:
-            try:
-                await _smtp.test_connection(self._cfg)
+            if await self._probe(force=True):
                 logger.info(
                     f"EmailService prêt → {self._cfg.smtp_host}:{self._cfg.smtp_port} "
                     f"(from={self._cfg.from_address})"
                 )
-                self._status = ServiceStatus.READY
-            except Exception as e:
+            else:
                 logger.warning(
-                    f"EmailService : connexion SMTP échouée ({e}) → mode dégradé")
-                self._status = ServiceStatus.DEGRADED
-        else:
-            self._status = ServiceStatus.DEGRADED
+                    f"EmailService : SMTP injoignable au démarrage — service démarré en mode "
+                    f"DÉGRADÉ. {self._degraded_reason}"
+                )
+        self._status = ServiceStatus.READY
+
+    async def _probe(self, force: bool = False) -> bool:
+        """Teste la connexion SMTP (au plus une fois par `_PROBE_MIN_INTERVAL` secondes)."""
+        if not self._smtp_available:
+            return False
+        now = time.monotonic()
+        if not force and self._last_probe and now - self._last_probe < _PROBE_MIN_INTERVAL:
+            return self._smtp_ok
+        self._last_probe = now
+        try:
+            await asyncio.wait_for(_smtp.test_connection(self._cfg), timeout=self._cfg.timeout + 1)
+        except Exception as e:
+            self._mark_failed(e)
+            return False
+        self._mark_ok()
+        return True
+
+    def _mark_ok(self) -> None:
+        if not self._smtp_ok:
+            logger.info("EmailService : SMTP de nouveau joignable — retour à la normale")
+        self._smtp_ok = True
+        self._degraded_reason = ""
+
+    def _mark_failed(self, exc: Exception) -> None:
+        self._smtp_ok = False
+        self._degraded_reason = (
+            f"SMTP injoignable ({self._cfg.smtp_host}:{self._cfg.smtp_port}) : {exc}. "
+            "Vérifier XAUTH_SMTP_HOST, XAUTH_SMTP_PORT, XAUTH_SMTP_USER, XAUTH_SMTP_PASSWORD "
+            "et XAUTH_SMTP_USE_TLS ; les e-mails sont mis en file et réessayés."
+        )
+
+    async def ensure_ready(self) -> bool:
+        """True si l'envoi est possible maintenant (re-sonde le SMTP s'il était dégradé)."""
+        return self._smtp_ok or await self._probe()
 
     async def shutdown(self) -> None:
         if self._worker is not None and not self._worker.done():
@@ -114,18 +166,19 @@ class EmailService(BaseService):
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         self._worker = None
+        for t in list(self._retry_tasks):
+            t.cancel()
+        self._retry_tasks.clear()
         self._status = ServiceStatus.STOPPED
         logger.info(
             f"EmailService arrêté — {self._sent_count} email(s) envoyé(s)")
 
     async def health_check(self) -> tuple[bool, str]:
         if not self._smtp_available:
-            return False, "aiosmtplib non installé"
-        try:
-            await _smtp.test_connection(self._cfg)
+            return False, self._degraded_reason
+        if await self._probe():
             return True, f"SMTP {self._cfg.smtp_host}:{self._cfg.smtp_port} accessible"
-        except Exception as e:
-            return False, f"SMTP inaccessible : {e}"
+        return False, self._degraded_reason
 
     def status(self) -> dict[str, Any]:
         return {
@@ -135,7 +188,10 @@ class EmailService(BaseService):
             "smtp_port": self._cfg.smtp_port,
             "from": self._cfg.from_address,
             "smtp_available": self._smtp_available,
+            "degraded": not self._smtp_ok,
+            "degraded_reason": self._degraded_reason,
             "queue_size": self._queue.qsize() if self._queue else 0,
+            "pending_retries": len(self._retry_tasks),
             "sent": self._sent_count,
             "failed": self._failed_count,
             "queued": self._queued_count,
@@ -217,40 +273,72 @@ class EmailService(BaseService):
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    async def _send_with_retry(self, msg: EmailMessage) -> bool:
+    async def _attempt(self, msg: EmailMessage) -> bool:
+        """Envoi avec `max_retries` essais immédiats ; ne compte pas l'échec définitif."""
         for attempt in range(1, self._cfg.max_retries + 1):
-            msg.attempts = attempt
+            msg.attempts += 1
             try:
                 if not self._smtp_available:
-                    logger.info(
-                        f"[EMAIL SIMULÉ] To: {msg.to} | Subject: {msg.subject} | "
-                        f"Body: {msg.body[:80]}..."
-                    )
-                    return True
+                    raise RuntimeError(self._degraded_reason or "SMTP indisponible")
                 await _smtp.send_message(self._cfg, msg)
+                self._mark_ok()
                 self._sent_count += 1
                 self._last_sent_at = time.time()
                 logger.info(
                     f"Email envoyé → {msg.to} | {msg.subject!r} (tentative {attempt})")
                 return True
             except Exception as e:
+                if self._smtp_available:
+                    self._mark_failed(e)
                 logger.warning(
                     f"Email échec (tentative {attempt}/{self._cfg.max_retries}) → {msg.to} : {e}")
                 if attempt < self._cfg.max_retries:
                     await asyncio.sleep(2 ** (attempt - 1))
+        return False
 
+    async def _send_with_retry(self, msg: EmailMessage) -> bool:
+        if await self._attempt(msg):
+            return True
         self._failed_count += 1
         logger.error(
             f"Email définitivement échoué → {msg.to} | {msg.subject!r}")
         return False
+
+    def _schedule_requeue(self, msg: EmailMessage) -> None:
+        """Remet le message en file après un délai croissant (borné par `max_requeues`)."""
+        delay = self._cfg.requeue_delay * min(2 ** msg.requeues, 16)
+        msg.requeues += 1
+
+        async def _later() -> None:
+            await asyncio.sleep(delay)
+            try:
+                self._queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                self._failed_count += 1
+                logger.error(f"Email perdu (file pleine) → {msg.to} | {msg.subject!r}")
+
+        task = asyncio.create_task(_later(), name="email_requeue")
+        self._retry_tasks.add(task)
+        task.add_done_callback(self._retry_tasks.discard)
 
     async def _queue_worker(self) -> None:
         logger.debug("Email queue worker démarré")
         while True:
             try:
                 msg = await self._queue.get()
-                await self._send_with_retry(msg)
-                self._queue.task_done()
+                try:
+                    if await self._attempt(msg):
+                        continue
+                    if msg.requeues < self._cfg.max_requeues:
+                        self._schedule_requeue(msg)
+                    else:
+                        self._failed_count += 1
+                        logger.error(
+                            f"Email abandonné après {msg.requeues} remise(s) en file → "
+                            f"{msg.to} | {msg.subject!r}. {self._degraded_reason}"
+                        )
+                finally:
+                    self._queue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as e:
